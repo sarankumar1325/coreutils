@@ -211,7 +211,11 @@ impl BytesChunk {
     /// [`UResult<None>`]; otherwise, it returns [`UResult<Some(bytes)>`], where bytes is the
     /// number of bytes read from the source.
     pub fn fill(&mut self, filehandle: &mut impl BufRead) -> UResult<Option<usize>> {
-        let num_bytes = filehandle.read(&mut self.buffer)?;
+        // A followed FIFO is read without blocking: no data yet is not an error.
+        let num_bytes = match filehandle.read(&mut self.buffer) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+            result => result?,
+        };
         self.bytes = num_bytes;
         if num_bytes == 0 {
             return Ok(None);

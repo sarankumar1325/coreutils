@@ -3171,6 +3171,54 @@ fn test_follow_replaced_by_fifo_does_not_block_other_files() {
     }
 }
 
+/// A followed name replaced by a FIFO whose writer sends a line and then stays
+/// silent must not stop tail from printing the other followed files: the read of
+/// the FIFO must not wait for more data, in name and descriptor mode. Polling
+/// reads every file on each pass, so it reaches the FIFO without an event.
+#[uutests::wasi_ignore(NoFifo)]
+#[test]
+#[cfg(not(windows))]
+fn test_follow_fifo_with_silent_writer_does_not_block_other_files() {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    for follow in ["-F", "-f"] {
+        let ts = TestScenario::new(util_name!());
+        let at = &ts.fixtures;
+        at.write("a", "a1\n");
+        at.write("b", "b1\n");
+
+        let mut p = ts
+            .ucmd()
+            .args(&[follow, "--use-polling", "-s.1", "a", "b"])
+            .run_no_wait();
+        p.make_assertion_with_delay(500).is_alive();
+
+        at.mkfifo("tmp_fifo");
+        at.rename("tmp_fifo", "b");
+        p.make_assertion_with_delay(500).is_alive();
+
+        // Fails with ENXIO instead of blocking if tail has not opened the FIFO.
+        let mut writer = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(at.plus("b"))
+            .unwrap();
+        writer.write_all(b"b2\n").unwrap();
+        p.make_assertion_with_delay(500).is_alive();
+
+        at.append("a", "a2\n");
+        p.make_assertion_with_delay(1000).is_alive();
+
+        p.kill()
+            .make_assertion()
+            .with_all_output()
+            .stdout_contains("b2")
+            .stdout_contains("a2");
+        drop(writer);
+    }
+}
+
 /// Test that tail with --pid exits when the monitored process dies, even with a FIFO.
 /// Without non-blocking FIFO open, tail would block forever waiting for a writer.
 #[uutests::wasi_ignore(NoFifo)]

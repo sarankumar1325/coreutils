@@ -123,7 +123,19 @@ impl FileHandling {
         // A FIFO without a writer blocks `open`, and this runs on the thread that
         // serves every followed file. Open FIFOs without waiting for a writer.
         #[cfg(unix)]
-        let file = crate::open_file(path, true)?;
+        let file = {
+            use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
+            use std::os::unix::fs::FileTypeExt;
+            let file = crate::open_file(path, true)?;
+            // A writer that connects and then sends nothing would block the
+            // read the same way. Like GNU, read FIFOs without blocking; `fill`
+            // treats `WouldBlock` as "no new data".
+            if file.metadata()?.file_type().is_fifo() {
+                let flags = fcntl_getfl(&file).map_err(std::io::Error::from)?;
+                fcntl_setfl(&file, flags | OFlags::NONBLOCK).map_err(std::io::Error::from)?;
+            }
+            file
+        };
         #[cfg(not(unix))]
         let file = File::open(path)?;
         let data = self.get_mut(path);
